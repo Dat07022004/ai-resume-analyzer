@@ -8,6 +8,9 @@ import { usePuterStore } from '~/lib/puter';
 import { generateUUID } from '~/lib/utils';
 import { sanitizeInput, detectPromptInjection, isValidFeedback } from '~/utils/security';
 
+// AI request timeout in milliseconds (30 seconds)
+const AI_REQUEST_TIMEOUT_MS = 30000;
+
 const Upload = () => {
     const { auth, isLoading, fs, ai, kv } = usePuterStore();
     const navigate = useNavigate();
@@ -34,14 +37,14 @@ const Upload = () => {
         setIsProcessing(true);
         
         try {
-            // Kiểm tra Prompt Injection
+            // Check for Prompt Injection / Kiểm tra Prompt Injection
             if (detectPromptInjection(jobTitle) || detectPromptInjection(jobDescription)) {
                 setStatusText('Error: Suspicious input detected. Please remove any instructions or system commands.');
                 setIsProcessing(false);
                 return;
             }
             
-            // Sanitize inputs
+            // Sanitize inputs / Làm sạch inputs
             const sanitizedJobTitle = sanitizeInput(jobTitle, 200);
             const sanitizedJobDescription = sanitizeInput(jobDescription, 2000);
             const sanitizedCompanyName = sanitizeInput(companyName, 100);
@@ -84,7 +87,7 @@ const Upload = () => {
             );
             
             const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('AI request timeout')), 30000)
+                setTimeout(() => reject(new Error('AI request timeout')), AI_REQUEST_TIMEOUT_MS)
             );
             
             const feedback = await Promise.race([feedbackPromise, timeoutPromise]) as any;
