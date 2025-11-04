@@ -6,6 +6,7 @@ import Navbar from '~/components/Navbar'
 import { convertPdfToImage } from '~/lib/pdf2img';
 import { usePuterStore } from '~/lib/puter';
 import { generateUUID } from '~/lib/utils';
+import { sanitizeInput, detectPromptInjection, isValidFeedback } from '~/utils/security';
 
 const Upload = () => {
     const { auth, isLoading, fs, ai, kv } = usePuterStore();
@@ -31,50 +32,118 @@ const Upload = () => {
         file: File;
     }) => {
         setIsProcessing(true);
-        setStatusText('Upload the file...');
-        const uploadedFile = await fs.upload([file]);
+        
+        try {
+            // Kiểm tra Prompt Injection
+            if (detectPromptInjection(jobTitle) || detectPromptInjection(jobDescription)) {
+                setStatusText('Error: Suspicious input detected. Please remove any instructions or system commands.');
+                setIsProcessing(false);
+                return;
+            }
+            
+            // Sanitize inputs
+            const sanitizedJobTitle = sanitizeInput(jobTitle, 200);
+            const sanitizedJobDescription = sanitizeInput(jobDescription, 2000);
+            const sanitizedCompanyName = sanitizeInput(companyName, 100);
+            
+            setStatusText('Upload the file...');
+            const uploadedFile = await fs.upload([file]);
+            if (!uploadedFile) throw new Error('File upload failed');
 
-        if (!uploadedFile) return setStatusText('Error: File upload failed');
+            setStatusText('Converting to image...');
+            const imageFile = await convertPdfToImage(file);
+            if (!imageFile.file) throw new Error('Failed to convert PDF to image');
+            
+            setStatusText('Upload to image...');
+            const uploadedImage = await fs.upload([imageFile.file]);
+            if (!uploadedImage) throw new Error('Image upload failed');
 
-        setStatusText('Converting to image...');
-        const imageFile = await convertPdfToImage(file);
-        if (!imageFile.file) return setStatusText('Error: Failed to convert PDF to image');
-        setStatusText('Upload to image...');
+            setStatusText('Preparing data...');
+            const uuid = generateUUID();
+            const data = {
+                id: uuid,
+                resumePath: uploadedFile.path,
+                imagePath: uploadedImage.path,
+                companyName: sanitizedCompanyName,
+                jobTitle: sanitizedJobTitle,
+                jobDescription: sanitizedJobDescription,
+                feedback: '',
+            }
+            await kv.set(`resume:${uuid}`, JSON.stringify(data));
 
-        const uploadedImage = await fs.upload([imageFile.file]);
-        if (!uploadedImage) return setStatusText('Error: Image upload failed');
+            setStatusText('Analyzing... This may take up to 30 seconds');
 
-        setStatusText('Preparing data...');
+            // AI feedback with timeout
+            const feedbackPromise = ai.feedback(
+                uploadedFile.path,
+                prepareInstructions({ 
+                    jobTitle: sanitizedJobTitle, 
+                    jobDescription: sanitizedJobDescription, 
+                    AIResponseFormat 
+                })
+            );
+            
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('AI request timeout')), 30000)
+            );
+            
+            const feedback = await Promise.race([feedbackPromise, timeoutPromise]) as any;
 
-        const uuid = generateUUID();
-        const data = {
-            id: uuid,
-            resumePath: uploadedFile.path,
-            imagePath: uploadedImage.path,
-            companyName, jobTitle, jobDescription,
-            feedback: '',
+            if (!feedback) {
+                setStatusText('Error: AI feedback failed');
+                setIsProcessing(false);
+                return;
+            }
+
+            // Safe JSON parsing
+            let feedbackText: string;
+            try {
+                feedbackText = typeof feedback?.message?.content === 'string'
+                    ? feedback.message.content
+                    : feedback?.message?.content?.[0]?.text || '';
+                    
+                if (!feedbackText) {
+                    throw new Error('Empty feedback text');
+                }
+            } catch (err) {
+                console.error('Failed to extract feedback text:', err);
+                setStatusText('Error: Invalid AI response format');
+                setIsProcessing(false);
+                return;
+            }
+
+            // Parse and validate JSON
+            let parsedFeedback: any;
+            try {
+                parsedFeedback = JSON.parse(feedbackText);
+            } catch (parseError) {
+                console.error('JSON parse error:', parseError);
+                console.error('Raw response:', feedbackText);
+                setStatusText('Error: Failed to parse AI response. Please try again.');
+                setIsProcessing(false);
+                return;
+            }
+
+            // Validate structure
+            if (!isValidFeedback(parsedFeedback)) {
+                console.error('Invalid feedback structure:', parsedFeedback);
+                setStatusText('Error: AI returned invalid feedback format. Please try again.');
+                setIsProcessing(false);
+                return;
+            }
+
+            data.feedback = parsedFeedback;
+            await kv.set(`resume:${uuid}`, JSON.stringify(data));
+            setStatusText('Done!');
+            console.log(data);
+            navigate(`/resume/${uuid}`);
+            
+        } catch (error: any) {
+            console.error('Unexpected error:', error);
+            setStatusText(`Error: ${error.message || 'Something went wrong. Please try again.'}`);
+        } finally {
+            setIsProcessing(false);
         }
-        await kv.set(`resume:${uuid}`, JSON.stringify(data));
-
-        setStatusText('Analyzing...');
-
-        //AI feeback
-        const feedback = await ai.feedback(
-            uploadedFile.path,
-            prepareInstructions({ jobTitle, jobDescription, AIResponseFormat })
-        )
-
-        if (!feedback) return setStatusText('Error: AI feedback failed');
-
-        const feedbackText = typeof feedback.message.content === 'string'
-            ? feedback.message.content
-            : feedback.message.content[0].text;
-
-        data.feedback = JSON.parse(feedbackText);
-        await kv.set(`resume:${uuid}`, JSON.stringify(data));
-        setStatusText('Done!');
-        console.log(data);
-        navigate(`/resume/${uuid}`);
     }
     //
 
