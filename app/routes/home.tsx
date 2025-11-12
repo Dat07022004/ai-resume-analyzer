@@ -1,6 +1,7 @@
 import type { Route } from "./+types/home";
 import Navbar from "~/components/Navbar";
 import ResumeCard from "~/components/ResumeCard";
+import SecurityLogs from "~/components/SecurityLogs";
 import { usePuterStore } from "~/lib/puter";
 import { Link, useNavigate } from "react-router";
 import { useEffect, useState } from "react";
@@ -79,6 +80,9 @@ export default function Home() {
           </Link>
         </div>
       )}
+
+      {/* Security Monitoring Dashboard */}
+      <SecurityLogs />
     </section>
   </main>
 }
